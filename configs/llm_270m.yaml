@@ -1,0 +1,46 @@
+data:
+  dataset_name: "roneneldan/TinyStories"
+  train_bin_path: "train.bin"
+  val_bin_path: "validation.bin"
+  tokenizer: "gpt2"
+  context_length: 128 # The sequence length for training
+
+model:
+  vocab_size: 50257 # gpt2 tokenizer vocab size
+  context_length: 1024 # Max context length supported by model architecture
+  emb_dim: 1024
+  n_heads: 8
+  n_layers: 12
+  hidden_dim: 2048
+  head_dim: 256
+  qk_norm: True
+  n_kv_groups: 8 # Changed to 8 to match n_heads for Multi-Head Attention
+  rope_local_base: 10000.0
+  rope_base: 1000000.0
+  layer_types: [
+    "full_attention", "full_attention", "full_attention", "full_attention",
+    "full_attention", "full_attention", "full_attention", "full_attention",
+    "full_attention", "full_attention", "full_attention", "full_attention"
+  ]
+  dtype: "bfloat16"
+  query_pre_attn_scalar: 256
+
+training:
+  batch_size: 32
+  learning_rate: 0.0001
+  max_iters: 150000
+  weight_decay: 0.1
+  beta1: 0.9
+  beta2: 0.95
+  grad_clip: 0.5
+  eval_interval: 500
+  eval_iters: 100
+  gradient_accumulation_steps: 32
+  
+  # New section for sampling during training
+  sampling:
+    enabled: true
+    interval: 1000  # Run a sample inference every 1000 training steps
+    output_file: "training_samples.txt"
+    prompt: "Hi, Do you know who J K Rowling is?"
+    max_new_tokens: 50
