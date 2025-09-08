@@ -1,0 +1,7 @@
+[project]
+name = "cooking_360M_LLM_from_scratch"
+version = "0.1.0"
+description = "A framework for training small language models from scratch."
+
+[tool.setuptools]
+packages = ["cooking_360M_LLM_from_scratch"]
