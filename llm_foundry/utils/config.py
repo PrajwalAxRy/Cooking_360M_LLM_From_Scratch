@@ -1,6 +1,6 @@
 import yaml
 
-def load_config(path="configs/gemma_270m.yaml"):
+def load_config(path="configs/llm_270m.yaml"):
     """
     Loads a YAML configuration file.
 
