@@ -1,0 +1,18 @@
+torch 
+transformers
+
+datasets # For Hugging Face datasets
+
+tiktoken # For tokenization using Byte Pair Encoding (BPE)
+
+numpy
+
+tqdm # For progress bars
+
+PyYAML # For configuration files
+
+pytest # For testing
+
+black
+ruff
+pre-commit
