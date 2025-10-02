@@ -4,3 +4,4 @@ __pycache__/
 .vscode/
 axeGPT_venv/
 cooking_360M_LLM_from_scratch.egg-info/
+outputs/
