@@ -13,3 +13,5 @@ $env:PYTHONPATH="C:\Projects\cooking_360M_LLM_from_scratch"
 python -m scripts.train --config .\configs\small_run.yaml
 
 python -m scripts.generate --config configs/llm_270m.yaml --prompt "Once Upon a Time"
+
+deepspeed --num_gpus=4 -m scripts.train --config configs/llm_270m.yaml
