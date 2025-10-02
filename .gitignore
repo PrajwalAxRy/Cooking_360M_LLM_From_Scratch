@@ -1,3 +1,6 @@
 __pycache__/
 *.bin
 *.ipynb_checkpoints
+.vscode/
+axeGPT_venv/
+cooking_360M_LLM_from_scratch.egg-info/
