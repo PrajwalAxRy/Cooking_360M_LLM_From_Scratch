@@ -26,24 +26,21 @@ model:
   query_pre_attn_scalar: 256
 
 training:
-  batch_size: 32
+  batch_size: 2  # Reduced from 4
   learning_rate: 0.0001
-  max_iters: 150000
+  max_iters: 20  # Reduced from 100 to just 20 iterations
   weight_decay: 0.1
   beta1: 0.9
   beta2: 0.95
   grad_clip: 0.5
-  eval_interval: 500
-  eval_iters: 100
-  gradient_accumulation_steps: 32
+  eval_interval: 10  # Reduced from 50 - evaluate twice during run
+  eval_iters: 5  # Reduced from 10
+  gradient_accumulation_steps: 1  # Reduced from 2 - no accumulation
+  
   # New section for sampling during training
   sampling:
     enabled: true
-    interval: 1000  # Run a sample inference every 1000 training steps
+    interval: 10  # Reduced from 50 - sample twice during run
     output_file: "training_samples.txt"
     prompt: "Hi, Do you know who J K Rowling is?"
     max_new_tokens: 50
-
-distributed:
-  enabled: false # True to activate GPU
-  deepspeed_config: "configs/ds_config.json"

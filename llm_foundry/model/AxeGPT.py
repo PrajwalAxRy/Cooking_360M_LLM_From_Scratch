@@ -45,7 +45,11 @@ class AxeGPT(nn.Module):
         super().__init__()
         self.cfg = cfg
 
-        self.tok_emb = nn.Embedding(cfg["vocab_size"], cfg["emb_dim"], dtype=torch.bfloat16 if cfg['dtype'] == 'bfloat16' else torch.float16)
+        self.tok_emb = nn.Embedding(cfg["vocab_size"], cfg["emb_dim"])
+        if cfg.get('dtype') == 'bfloat16':
+            self.tok_emb = self.tok_emb.to(torch.bfloat16)
+        elif cfg.get('dtype') == 'float16':
+            self.tok_emb = self.tok_emb.to(torch.float16)
         self.blocks = nn.ModuleList([TransformerBlock(cfg) for _ in range(cfg["n_layers"])]) ## Imp, ModuleList is a special list in PyTorch that registers the layers properly in the model
         self.final_norm = RMSNorm(cfg["emb_dim"], eps=1e-6)
         self.out_head = nn.Linear(cfg["emb_dim"], cfg["vocab_size"], bias=False, dtype=torch.bfloat16 if cfg['dtype'] == 'bfloat16' else torch.float16)

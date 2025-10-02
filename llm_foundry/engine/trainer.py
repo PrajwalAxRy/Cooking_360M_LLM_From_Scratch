@@ -9,18 +9,25 @@ from llm_foundry.model.AxeGPT import AxeGPT
 from llm_foundry.data.dataset import MemmapDataset
 from llm_foundry.utils.config import load_config
 
+import deepspeed
+
+
 class Trainer:
     """
-     Trainer class to setup training and evaluation loops for LLMs.
+    Trainer class to setup training and evaluation loops for LLMs.
     """
     def __init__(self, config_path:str):
         #Load Model Conifg
         self.model_config = load_config(config_path)
+        self.is_distributed = self.config['distributed']['enabled']
 
-        #Use correct Device
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        print(f"Using device: {self.device}")
-        torch.set_default_device(self.device)
+        # Device setting being handled by a function _setup_device
+        # self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        # print(f"Using device: {self.device}")
+        # torch.set_default_device(self.device)
+        self.device = self._setup_device()
+        self.rank = int(os.environ.get('RANK', 0))
+        
 
         ## Use tokenizer
         self.tokenizer = tiktoken.get_encoding(self.model_config["data"]["tokenizer"])
@@ -41,29 +48,59 @@ class Trainer:
 
 
         # Model
-        self.model = AxeGPT(self.model_config["model"])
-        self.model.to(self.device)
-        print(f"Model intialized with {sum(p.numel() for p in self.model.parameters()):,} parameters.")
-
-        # Optimizer
-        self.optimizer = torch.optim.AdamW(
-                                           self.model.parameters(), 
-                                           lr=self.model_config["training"]["learning_rate"],
-                                           betas=(self.model_config["training"]["beta1"], self.model_config["training"]["beta2"]),
-                                           weight_decay=self.model_config["training"]["weight_decay"]
-                                           )
+        # self.model = AxeGPT(self.model_config["model"])
+        # self.model.to(self.device)
+        # print(f"Model intialized with {sum(p.numel() for p in self.model.parameters()):,} parameters.")
+        self.model = self._setup_model()
+        self.optimizer = self._setup_optimizer(self.model)
+        
+        if self.is_distributed:
+            ## ------------- DeepSpeed Initialization ------------- ##
+            model_engine, self.optimizer, _, _ = deepspeed.initialize(
+                model=self.model,
+                optimizer=self.optimizer,
+                config_params=self.config['distributed']['deepspeed_config']
+            )
+            self.model = model_engine
+        else:
+            self.model.to(self.device)
+            self.optimizer = self.optimizer
+            
 
         # Training State
         self.best_val_loss = float('inf')
         self.step = 0
+        
+        if self.rank == 0:
+            os.makedirs("outputs", exist_ok=True)
 
-        # Directory for saving other outputs if it doesn't exist
-        os.makedirs("outputs", exist_ok=True)
+
+    def _setup_device(self):
+        if self.is_distributed:
+            deepspeed.init_distributed()
+            return torch.cuda.current_device()
+        else:
+            return "cuda" if torch.cuda.is_available() else "cpu"
+
+    def _setup_model(self):
+        model = AxeGPT(self.model_config["model"])
+        if not self.is_distributed:
+            print(f"Model initialized with {sum(p.numel() for p in model.parameters())/1e6:.2f}M parameters.")
+        return model
+
+    def _setup_optimizer(self, model):
+        optimizer = torch.optim.AdamW(
+                                model.parameters(), 
+                                lr=self.model_config["training"]["learning_rate"],
+                                betas=(self.model_config["training"]["beta1"], self.model_config["training"]["beta2"]),
+                                weight_decay=self.model_config["training"]["weight_decay"]
+                                )
+        return optimizer
 
     @torch.no_grad()
     def run_eval(self):
         """
-         Runs evaluation on the validation dataset.
+        Runs evaluation on the validation dataset.
         """
         self.model.eval() # Set model to evaluation mode. Note: Make sure to call model.train() to set it back to training mode after eval.
 
@@ -75,68 +112,78 @@ class Trainer:
             losses[k] = loss.item()
         
         val_loss = losses.mean()
-        print(f"Step {self.step}: Validation loss {val_loss:.4f}")
+        
+        if self.rank == 0:
+            print(f"Step {self.step}: Validation loss {val_loss:.4f}")
 
-        if val_loss < self.best_val_loss:
-            self.best_val_loss = val_loss
-            print(f"New best validation loss: {self.best_val_loss:.4f}. Saving model checkpoint...")
-            torch.save(self.model.state_dict(), f"outputs/best_model_{self.step}.pth")
+            if val_loss < self.best_val_loss:
+                self.best_val_loss = val_loss
+                print(f"New best validation loss. Saving checkpoint.")
+                
+                ### Deepspeed
+                if self.is_distributed:
+                    print(f"New best validation loss: {self.best_val_loss:.4f}. Saving model checkpoint...")
+                    self.model.save_checkpoint("outputs", f"best_model_{self.step}", client_state={'step': self.step, 'val_loss': self.best_val_loss})
+                else:
+                    torch.save(self.model.state_dict(), f"outputs/best_model_{self.step}.pth")
 
         self.model.train() # Set model back to training mode
         
     @torch.no_grad()
     def _run_sampling(self):
         """
-         Generates sample text from the model.
+        Generates sample text from the model.
         """
-        self.model.eval() # Set model to evaluation mode. 
-        sampling_config = self.model_config['training']['sampling']
+        if self.rank == 0 and self.config['training']['sampling']['enabled']:
+            self.model.eval() # Set model to evaluation mode. 
+            sampling_config = self.model_config['training']['sampling']
 
-        print(f"\n--- Sampling at step {self.step} ---")
+            print(f"\n--- Sampling at step {self.step} ---")
 
-        prompt = sampling_config["prompt"]
-        
-        #tokenize
-        context = self.tokenizer.encode(prompt)
-        # Make it a tensor
-        context = torch.tensor(context, dtype=torch.long, device=self.device)
-        # Add batch dimension
-        context = context.unsqueeze(0)  # Shape: (1, sequence_length) 
+            prompt = sampling_config["prompt"]
+            output_file = f"outputs/{sampling_config['output_file']}"
+            
+            #tokenize
+            context = self.tokenizer.encode(prompt)
+            # Make it a tensor
+            context = torch.tensor(context, dtype=torch.long, device=self.device)
+            # Add batch dimension
+            context = context.unsqueeze(0)  # Shape: (1, sequence_length) 
 
-        generated_tokens = self.model.generate(context, max_new_tokens=25)
-        generated_text = self.tokenizer.decode(generated_tokens[0].tolist()) # "tolist() to convert tensor to list"
+            generated_tokens = self.model.generate(context, max_new_tokens=25)
+            generated_text = self.tokenizer.decode(generated_tokens[0].tolist()) # "tolist() to convert tensor to list"
 
-        print(generated_text)
-        print("\n--------------------------------------------\n")
+            print(generated_text)
+            print("\n--------------------------------------------\n")
 
-        with open(f"outputs/{sampling_config['output_file']}", "a") as f:
-            f.write(f"\n--- Sampling at step {self.step} ---\n")
-            f.write(generated_text)
-            f.write("\n--------------------------------------------\n")
-        
-        self.model.train() # Set model back to training mode
+            with open(f"outputs/{sampling_config['output_file']}", "a") as f:
+                f.write(f"\n--- Sampling at step {self.step} ---\n")
+                f.write(generated_text)
+                f.write("\n--------------------------------------------\n")
+            
+            self.model.train() # Set model back to training mode
 
     def train(self):
         """
-         Main training loop.
+        Main training loop.
         """
         self.model.train() # Set model to training mode.
+        total_steps = self.model_config['training']['max_iters']
+        pbar = tqdm(range(total_steps), disable=(self.rank != 0))
 
-        total_step = self.model_config['training']['max_iters']
-        progress_bar = tqdm(range(total_step), desc="Training", unit="step")
-
-        for step in progress_bar:
+        for step in pbar:
             self.step = step # Keep track of current step
 
             if step > 0:
                 if step % self.model_config['training']['eval_interval'] == 0:
                     self.run_eval()
-                if (self.model_config['training']['sampling']['enable'] and 
+                if (self.model_config['training']['sampling']['enabled'] and 
                     step % self.model_config['training']['sampling']['interval'] == 0):
                     self._run_sampling()
 
-            # Reset gradients
-            self.optimizer.zero_grad(set_to_none=True)
+            if not self.is_distributed:  
+                # In DeepSpeed, gradients are managed internally
+                self.optimizer.zero_grad(set_to_none=True)
 
             # Gradient Accumulation
             accumulation_steps = self.model_config['training']['gradient_accumulation_steps']
@@ -146,13 +193,22 @@ class Trainer:
 
                 # Scale loss by accumulation steps. We do this because we want to average the gradients over the accumulation steps.
                 loss = loss / accumulation_steps
-                loss.backward()
-            
+                ## loss.backward() using deepspeed
+                if self.is_distributed:
+                    self.model.backward(loss)
+                else:
+                    loss.backward()
+                
             # Gradient clipping
             torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.model_config['training']['grad_clip'])
-            self.optimizer.step()
+            
+            if self.is_distributed:
+                self.model.step()
+            else:
+                self.optimizer.step()
+
 
             ## Progress bar update
-            progress_bar.set_description(
+            pbar.set_description(
                 f"Step {step+1}/{total_step} | Loss: {loss.item()*accumulation_steps:.4f} | LR: {self.optimizer.param_groups[0]['lr']:.6f}"
             )
